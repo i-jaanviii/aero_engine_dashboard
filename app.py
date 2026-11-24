@@ -1,30 +1,19 @@
 """
 SIH26054 | AI-Enabled Predictive Maintenance for Aero Engines
-
-DEMO NOTICE:
-All engine readings, RUL values, health classifications, and model metrics in this
-starter dashboard are simulated for interface demonstration. They are NOT outputs
-from a trained model and must not be presented as real model predictions.
-
-Future integration points:
-- Replace generate_engine_data() with loading/preprocessing of the actual dataset.
-- Replace estimate_rul_demo() with inference from the trained model.
-- Replace get_demo_metrics() with metrics calculated on a held-out test set.
+NASA C-MAPSS FD001 | Linear Regression pipeline
 """
 
 from __future__ import annotations
 
+import joblib
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-# ----------------------------- Page configuration -----------------------------
-
 st.set_page_config(
-    page_title="Aero Engine | Predictive Maintenance",
-    page_icon=None,
+    page_title="Aero Engine Predictive Maintenance",
+    page_icon=" ",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -36,236 +25,293 @@ MUTED = "#9AAEC3"
 GRID = "#26384D"
 TEXT = "#E8F0F7"
 
-# -------------------------------- Demo data -----------------------------------
+MODEL_PATH = "rul_model.joblib"
+DATA_PATH = "dashboard_sensor_data.csv"
 
-def generate_engine_data(engine_id: int, current_cycle: int, points: int = 120) -> pd.DataFrame:
-    """Generate repeatable simulated sensor history for one demo engine."""
-    rng = np.random.default_rng(seed=engine_id * 1009 + current_cycle)
-    cycles = np.linspace(max(1, current_cycle - points + 1), current_cycle, points)
-    progress = np.linspace(0, 1, points)
-    engine_offset = (engine_id % 11) / 100
+@st.cache_resource
+def load_model_bundle():
+    return joblib.load(MODEL_PATH)
 
-    temperature = 650 + 24 * progress + engine_offset * 30 + rng.normal(0, 2.2, points)
-    pressure = 42 - 3.2 * progress - engine_offset * 2 + rng.normal(0, 0.45, points)
-    vibration = 2.0 + 1.45 * progress + engine_offset * 0.8 + rng.normal(0, 0.12, points)
-    fuel_flow = 0.82 + 0.12 * progress + engine_offset * 0.05 + rng.normal(0, 0.015, points)
+@st.cache_data
+def load_sensor_data():
+    data = pd.read_csv(DATA_PATH)
+    data["engine_id"] = data["engine_id"].astype(int)
+    data["cycle"] = data["cycle"].astype(int)
+    return data
+def predict_rul(model_pipeline, sensor_window: pd.DataFrame, selected_sensors: list[str], rul_cap: int) -> float:
+    # Preserve the exact sensor order stored with the trained model.
+    # Pass raw values; StandardScaler is already inside the saved pipeline.
+    raw_features = sensor_window[selected_sensors].to_numpy(dtype=float).reshape(1, -1)
+    if raw_features.shape[1] != 450:
+        raise ValueError(f"Expected 450 input features, received {raw_features.shape[1]}.")
+    prediction = float(model_pipeline.predict(raw_features)[0])
+    return float(np.clip(prediction, 0, rul_cap))
 
-    return pd.DataFrame({
-        "Cycle": cycles.astype(int),
-        "Exhaust Gas Temperature (°C)": temperature,
-        "Pressure Ratio": pressure,
-        "Vibration (mm/s)": vibration,
-        "Fuel Flow (kg/s)": fuel_flow,
-    })
-def estimate_rul_demo(engine_id: int, current_cycle: int) -> int:
-    """
-    Placeholder only. This is a deterministic simulated value, not ML inference.
-    Replace this function with the trained model's predict() call.
-    """
-    simulated_remaining = 115 - (engine_id % 13) * 4 - int(current_cycle * 0.08)
-    return int(np.clip(simulated_remaining, 8, 140))
+def calculate_nasa_score(actual: np.ndarray, predicted: np.ndarray) -> float:
+    errors = predicted - actual
+    penalties = np.where(
+        errors < 0,
+        np.exp(-errors / 13.0) - 1.0,
+        np.exp(errors / 10.0) - 1.0,
+    )
+    return float(np.sum(penalties))
 
+def evaluate_model(data: pd.DataFrame, bundle: dict) -> tuple[float, float, float]:
+    pipeline = bundle["model"]
+    sensors = bundle["selected_sensors"]
+    window_size = int(bundle["window_size"])
+    rul_cap = int(bundle["rul_cap"])
 
-def get_health_status(rul: int) -> tuple[str, str]:
-    """Map the demo RUL value to a simple illustrative health category."""
-    if rul >= 75:
-        return "Healthy", "#22C55E"
-    if rul >= 35:
-        return "Degraded", "#F59E0B"
-    return "Critical", "#EF4444"
+    actual_values = []
+    predicted_values = []
+    for engine_id in sorted(data["engine_id"].unique()):
+        engine = data[data["engine_id"] == engine_id].sort_values("cycle")
+        window = engine.tail(window_size)
+        if len(window) != window_size:
+            continue
+        predicted_values.append(predict_rul(pipeline, window, sensors, rul_cap))
+        actual_values.append(float(engine["actual_RUL"].iloc[-1]))
 
-def get_demo_metrics() -> dict[str, float]:
-    """
-    Illustrative placeholder metrics. Not calculated from a trained model/test set.
-    Replace with evaluation results from a held-out labelled test dataset.
-    """
-    return {
-        "RMSE": 12.5,
-        "MAE": 8.4,
-        "Asymmetric score": 150.2,
-    }
+    actual = np.asarray(actual_values, dtype=float)
+    predicted = np.asarray(predicted_values, dtype=float)
+    rmse = float(np.sqrt(np.mean((predicted - actual) ** 2)))
+    mae = float(np.mean(np.abs(predicted - actual)))
+    score = calculate_nasa_score(actual, predicted)
+    return rmse, mae, score
 
-
-# ------------------------------ Plot functions --------------------------------
-
-def apply_chart_theme(fig: go.Figure, height: int = 300) -> go.Figure:
+def make_chart_theme(fig: go.Figure, height: int = 330) -> go.Figure:
     fig.update_layout(
         height=height,
         paper_bgcolor=PANEL,
         plot_bgcolor=PANEL,
         font=dict(color=TEXT, family="Arial"),
-        margin=dict(l=18, r=18, t=28, b=18),
+        margin=dict(l=24, r=20, t=48, b=24),
         xaxis=dict(gridcolor=GRID, zerolinecolor=GRID, title_font_color=MUTED),
         yaxis=dict(gridcolor=GRID, zerolinecolor=GRID, title_font_color=MUTED),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hoverlabel=dict(bgcolor=NAVY, font_color=TEXT),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return fig
+try:
+    bundle = load_model_bundle()
+    sensor_data = load_sensor_data()
+except Exception as exc:
+    st.error("Could not load the model or sensor dataset.")
+    st.exception(exc)
+    st.stop()
 
-def sensor_chart(data: pd.DataFrame, sensor: str) -> go.Figure:
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=data["Cycle"], y=data[sensor], mode="lines",
-        name=sensor, line=dict(color=CYAN, width=2.4),
-        fill="tozeroy", fillcolor="rgba(56,189,248,0.08)",
-    ))
-    fig.update_layout(title=sensor, xaxis_title="Operating cycle", yaxis_title=sensor)
-    return apply_chart_theme(fig)
+required_columns = {"engine_id", "cycle", "actual_RUL", *bundle["selected_sensors"]}
+missing_columns = required_columns.difference(sensor_data.columns)
+if missing_columns:
+    st.error(f"Missing required dataset columns: {', '.join(sorted(missing_columns))}")
+    st.stop()
 
-
-def degradation_chart(data: pd.DataFrame) -> go.Figure:
-    # Illustrative normalized degradation index, not a measured health score.
-    progress = np.linspace(0, 1, len(data))
-    degradation = 100 - 58 * (progress ** 1.35)
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=data["Cycle"], y=degradation, mode="lines",
-        name="Simulated degradation index",
-        line=dict(color="#A78BFA", width=3),
-        fill="tozeroy", fillcolor="rgba(167,139,250,0.10)",
-    ))
-    fig.update_layout(
-        title="Historical degradation trend (simulated)",
-        xaxis_title="Operating cycle",
-        yaxis_title="Illustrative health index",
-        yaxis=dict(range=[0, 105]),
-    )
-    return apply_chart_theme(fig, 330)
-
-# ----------------------------------- UI ----------------------------------------
-
+selected_sensors = bundle["selected_sensors"]
+window_size = int(bundle["window_size"])
+rul_cap = int(bundle["rul_cap"])
+pipeline = bundle["model"]
+# Styling
 st.markdown(
     f"""
     <style>
     .stApp {{ background: {NAVY}; color: {TEXT}; }}
     [data-testid="stSidebar"] {{ background: #08111E; border-right: 1px solid {GRID}; }}
-    .block-container {{ padding-top: 1.6rem; padding-bottom: 2.5rem; max-width: 1500px; }}
-    .eyebrow {{ color: {CYAN}; font-size: 0.76rem; letter-spacing: 0.16em; font-weight: 700; }}
-    .main-title {{ color: {TEXT}; font-size: 2rem; font-weight: 700; margin: 0.15rem 0 0.2rem 0; }}
-    .sub-title {{ color: {MUTED}; font-size: 0.95rem; margin-bottom: 1.25rem; }}
-    .demo-banner {{ background: #302515; border: 1px solid #8B6426; color: #F8D99A;
-                    padding: 0.85rem 1rem; border-radius: 8px; margin: 0.8rem 0 1.3rem 0; }}
-    .metric-card {{ background: {PANEL}; border: 1px solid {GRID}; border-radius: 10px;
-                    padding: 1rem 1.1rem; min-height: 112px; }}
-    .metric-label {{ color: {MUTED}; font-size: 0.82rem; margin-bottom: 0.45rem; }}
-    .metric-value {{ color: {TEXT}; font-size: 1.8rem; font-weight: 700; line-height: 1.15; }}
-    .section-heading {{ color: {TEXT}; font-size: 1.08rem; font-weight: 650; margin: 0.35rem 0 0.7rem 0; }}
-    div[data-testid="stSelectbox"] label, div[data-testid="stSlider"] label {{ color: {MUTED}; }}
+    .block-container {{ padding-top: 1.5rem; padding-bottom: 2.5rem; max-width: 1550px; }}
+    .eyebrow {{ color: {CYAN}; font-size: .76rem; letter-spacing: .15em; font-weight: 700; }}
+    .main-title {{ color: {TEXT}; font-size: 2rem; font-weight: 750; margin: .15rem 0 .2rem; }}
+    .sub-title {{ color: {MUTED}; margin-bottom: 1.1rem; }}
+    .metric-card {{ background: {PANEL}; border: 1px solid {GRID}; border-radius: 10px; padding: 1rem 1.1rem; min-height: 108px; }}
+    .metric-label {{ color: {MUTED}; font-size: .82rem; margin-bottom: .45rem; }}
+    .metric-value {{ color: {TEXT}; font-size: 1.8rem; font-weight: 700; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.markdown('<div class="eyebrow">SIH26054  /  ENGINEERING MONITORING SYSTEM</div>', unsafe_allow_html=True)
+st.markdown('<div class="eyebrow">SIH26054 / ENGINEERING MONITORING SYSTEM</div>', unsafe_allow_html=True)
 st.markdown('<div class="main-title">Aero Engine Predictive Maintenance</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">Engine condition monitoring · Remaining useful life overview · Sensor trends</div>',
+    '<div class="sub-title">NASA C-MAPSS FD001 · Engine condition monitoring · Remaining useful life prediction</div>',
     unsafe_allow_html=True,
 )
-st.markdown(
-    '<div class="demo-banner"><strong>DEMO MODE — SIMULATED DATA</strong><br>'
-    'All displayed sensor readings, RUL values, health states and model metrics are illustrative '
-    'placeholders. No trained AI model is connected, and these values are not operational predictions.</div>',
-    unsafe_allow_html=True,
-)
-
+# Sidebar controls
+engine_ids = sorted(sensor_data["engine_id"].unique().tolist())
 with st.sidebar:
     st.markdown("### Monitoring controls")
-    engine_id = st.selectbox("Select engine", options=list(range(1, 101)), index=0,
-                             format_func=lambda x: f"Engine {x}")
-    current_cycle = st.slider("Current operating cycle", min_value=1, max_value=500,
-                              value=150, step=1)
-    st.divider()
-    st.caption("Data source")
-    st.markdown("**Simulated demonstration dataset**")
-    st.caption("Model integration: not connected")
-
-
-sensor_data = generate_engine_data(engine_id, current_cycle)
-rul = estimate_rul_demo(engine_id, current_cycle)
-health, health_color = get_health_status(rul)
-metrics = get_demo_metrics()
-
-# Top-level operational indicators
-st.markdown('<div class="section-heading">Engine overview</div>', unsafe_allow_html=True)
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    st.markdown(f'<div class="metric-card"><div class="metric-label">Selected engine</div>'
-                f'<div class="metric-value">ENG-{engine_id:03d}</div></div>', unsafe_allow_html=True)
-with c2:
-    st.markdown(f'<div class="metric-card"><div class="metric-label">Current operating cycle</div>'
-                f'<div class="metric-value">{current_cycle:,}</div></div>', unsafe_allow_html=True)
-with c3:
-    st.markdown(f'<div class="metric-card"><div class="metric-label">Illustrative RUL</div>'
-                f'<div class="metric-value">{rul} <span style="font-size:0.9rem;color:{MUTED}">cycles</span></div></div>',
-                unsafe_allow_html=True)
-with c4:
-    st.markdown(f'<div class="metric-card"><div class="metric-label">Demo health status</div>'
-                f'<div class="metric-value" style="color:{health_color}">{health}</div></div>',
-                unsafe_allow_html=True)
-
-st.caption("RUL and health status above are generated by a placeholder demonstration function, not a trained model.")
-
-st.divider()
-left, right = st.columns([1.25, 1])
-with left:
-    st.markdown('<div class="section-heading">Sensor monitoring</div>', unsafe_allow_html=True)
-    selected_sensor = st.selectbox(
-        "Sensor channel",
-        options=[
-            "Exhaust Gas Temperature (°C)",
-            "Pressure Ratio",
-            "Vibration (mm/s)",
-            "Fuel Flow (kg/s)",
-        ],
-        label_visibility="collapsed",
+    engine_id = st.selectbox(
+        "Select engine",
+        options=engine_ids,
+        format_func=lambda value: f"Engine {value}",
     )
-    st.plotly_chart(sensor_chart(sensor_data, selected_sensor), use_container_width=True)
-with right:
-    st.markdown('<div class="section-heading">Historical degradation</div>', unsafe_allow_html=True)
-    st.plotly_chart(degradation_chart(sensor_data), use_container_width=True)
 
-st.divider()
-st.markdown('<div class="section-heading">Model performance metrics</div>', unsafe_allow_html=True)
-st.caption("Illustrative placeholder values only — not measured evaluation results.")
-m1, m2, m3 = st.columns(3)
-for col, label, value, detail in [
-    (m1, "RMSE", metrics["RMSE"], "Root Mean Squared Error"),
-    (m2, "MAE", metrics["MAE"], "Mean Absolute Error"),
-    (m3, "Asymmetric score", metrics["Asymmetric score"], "Illustrative scoring value"),
-]:
+engine_history = sensor_data[sensor_data["engine_id"] == engine_id].sort_values("cycle").copy()
+max_cycle = int(engine_history["cycle"].max())
+
+with st.sidebar:
+    current_cycle = st.slider(
+        "Current operating cycle",
+        min_value=window_size,
+        max_value=max_cycle,
+        value=max_cycle,
+        step=1,
+    )
+    st.divider()
+    st.caption("Dataset: NASA C-MAPSS FD001")
+    st.caption(f"Model: {bundle.get('model_name', 'Saved regression pipeline')}")
+    st.caption(f"Input: {window_size} cycles × {len(selected_sensors)} sensors")
+
+visible_history = engine_history[engine_history["cycle"] <= current_cycle].sort_values("cycle")
+latest_window = visible_history.tail(window_size)
+
+if len(latest_window) < window_size:
+    st.warning(f"At least {window_size} cycles are required. Only {len(latest_window)} are available.")
+    st.stop()
+
+try:
+    predicted_rul = predict_rul(pipeline, latest_window, selected_sensors, rul_cap)
+except Exception as exc:
+    st.error(f"Prediction failed: {exc}")
+    st.stop()
+
+final_actual_rul = float(engine_history["actual_RUL"].iloc[-1])
+
+actual_rul = min(
+    rul_cap,
+    final_actual_rul + (max_cycle - current_cycle)
+)
+prediction_error = predicted_rul - actual_rul
+
+if predicted_rul >= 75:
+    health_status, health_color = "Healthy", "#22C55E"
+elif predicted_rul >= 35:
+    health_status, health_color = "Degraded", "#F59E0B"
+else:
+    health_status, health_color = "Critical", "#EF4444"
+# Main engine indicators
+st.markdown("### Engine overview")
+c1, c2, c3, c4 = st.columns(4)
+cards = [
+    (c1, "Selected engine", f"ENG-{engine_id:03d}"),
+    (c2, "Current operating cycle", f"{current_cycle:,}"),
+    (c3, "Predicted remaining useful life", f"{predicted_rul:.2f} cycles"),
+    (c4, "Health status (RUL threshold rule)", health_status),
+]
+for col, label, value in cards:
     with col:
+        color_style = f"color:{health_color};" if label.startswith("Health") else ""
         st.markdown(
             f'<div class="metric-card"><div class="metric-label">{label}</div>'
-            f'<div class="metric-value">{value:.2f}</div>'
-            f'<div style="color:{MUTED};font-size:0.75rem;margin-top:0.35rem">{detail}</div></div>',
+            f'<div class="metric-value" style="{color_style}">{value}</div></div>',
             unsafe_allow_html=True,
         )
 
-with st.expander("View simulated sensor data"):
-    st.dataframe(sensor_data.tail(15), use_container_width=True, hide_index=True)
+st.caption(
+    f"Benchmark reference for this FD001 test engine: actual RUL = {actual_rul:.0f} cycles · "
+    f"prediction error = {prediction_error:+.2f} cycles. "
+    "Actual RUL is shown because this is a labelled benchmark test set."
+)
 
-with st.expander("Model and dataset integration notes"):
-    st.markdown(
-        """
-        **Current implementation**
-        - Sensor history is generated locally by `generate_engine_data()`.
-        - RUL is a placeholder from `estimate_rul_demo()`.
-        - Health status is a demonstration rule based on the placeholder RUL.
-        - Metrics are fixed illustrative values from `get_demo_metrics()`.
+st.divider()
+left, right = st.columns([1.1, 1])
 
-        **When the actual model and dataset are ready**
-        1. Load and preprocess the selected engine's time-series records.
-        2. Pass the latest sensor window to the trained model.
-        3. Replace the placeholder RUL function with model inference.
-        4. Calculate RMSE, MAE and the required asymmetric score on a held-out labelled test set.
-        5. Display the dataset source, model version and evaluation split in the dashboard.
-        """
+with left:
+    st.markdown("### Sensor monitoring")
+    default_sensor = "sensor_2" if "sensor_2" in selected_sensors else selected_sensors[0]
+    selected_sensor = st.selectbox(
+        "Sensor channel",
+        options=selected_sensors,
+        index=selected_sensors.index(default_sensor),
     )
+    fig_sensor = go.Figure()
+    fig_sensor.add_trace(
+        go.Scatter(
+            x=visible_history["cycle"],
+            y=visible_history[selected_sensor],
+            mode="lines",
+            name=selected_sensor,
+            line=dict(color=CYAN, width=2.3),
+        )
+    )
+    fig_sensor.update_layout(
+        title=f"{selected_sensor} — observed sensor trend",
+        xaxis_title="Operating cycle",
+        yaxis_title="Raw sensor value",
+    )
+    st.plotly_chart(make_chart_theme(fig_sensor), use_container_width=True)
+with right:
+    st.markdown("### Historical RUL prediction curve")
+    # Re-run inference at historical cycle endpoints using each endpoint's latest 30-cycle window.
+    history_predictions = []
+    candidate_cycles = list(range(window_size, current_cycle + 1))
+    stride = max(1, len(candidate_cycles) // 100)
+    sampled_cycles = candidate_cycles[::stride]
+    if sampled_cycles[-1] != current_cycle:
+        sampled_cycles.append(current_cycle)
+
+    for endpoint in sampled_cycles:
+        past_window = engine_history[engine_history["cycle"] <= endpoint].sort_values("cycle").tail(window_size)
+        if len(past_window) == window_size:
+            history_predictions.append(
+                (endpoint, predict_rul(pipeline, past_window, selected_sensors, rul_cap))
+            )
+
+    curve_df = pd.DataFrame(history_predictions, columns=["cycle", "predicted_RUL"])
+    fig_rul = go.Figure()
+    fig_rul.add_trace(
+        go.Scatter(
+            x=curve_df["cycle"],
+            y=curve_df["predicted_RUL"],
+            mode="lines+markers",
+            name="Model-predicted RUL",
+            line=dict(color="#A78BFA", width=2.6),
+            marker=dict(size=5),
+        )
+    )
+    fig_rul.update_layout(
+        title="Predicted RUL over historical windows",
+        xaxis_title="Operating cycle",
+        yaxis_title="Predicted remaining cycles",
+        yaxis=dict(range=[0, rul_cap + 5]),
+    )
+    st.plotly_chart(make_chart_theme(fig_rul), use_container_width=True)
+
+st.caption(
+    "The historical curve is generated by rerunning the trained model on successive 30-cycle windows. "
+    "It is a model-prediction trend, not a separately measured physical degradation index."
+)
+
+st.divider()
+st.markdown("### Model performance — FD001 test set")
+try:
+    rmse, mae, asymmetric_score = evaluate_model(sensor_data, bundle)
+    m1, m2, m3 = st.columns(3)
+    for col, label, value, detail in [
+        (m1, "RMSE", rmse, "Root Mean Squared Error · cycles"),
+        (m2, "MAE", mae, "Mean Absolute Error · cycles"),
+        (m3, "NASA asymmetric score", asymmetric_score, "Lower is better"),
+    ]:
+        with col:
+            st.markdown(
+                f'<div class="metric-card"><div class="metric-label">{label}</div>'
+                f'<div class="metric-value">{value:.3f}</div>'
+                f'<div style="color:{MUTED};font-size:.75rem;margin-top:.35rem">{detail}</div></div>',
+                unsafe_allow_html=True,
+            )
+    st.caption("Metrics are recalculated across all 100 labelled FD001 test engines using the saved model.")
+except Exception as exc:
+    st.error(f"Could not calculate evaluation metrics: {exc}")
+
+with st.expander("View latest 30-cycle model input"):
+    st.write("The model receives the raw values below in the exact sensor order stored in the model bundle.")
+    st.code(" → ".join(selected_sensors))
+    st.dataframe(latest_window[["cycle"] + selected_sensors], use_container_width=True, hide_index=True)
+
+with st.expander("View selected engine sensor records"):
+    st.dataframe(visible_history, use_container_width=True, hide_index=True)
 
 st.markdown(
-    f'<div style="border-top:1px solid {GRID};padding-top:0.8rem;margin-top:1.5rem;'
-    f'color:{MUTED};font-size:0.75rem">AERO ENGINE MONITORING SYSTEM · SIH26054 · '
-    f'Demonstration interface only</div>',
+    f'<div style="border-top:1px solid {GRID};padding-top:.8rem;margin-top:1.5rem;'
+    f'color:{MUTED};font-size:.75rem">NASA C-MAPSS FD001 · Linear Regression + StandardScaler pipeline · '
+    f'SIH26054</div>',
     unsafe_allow_html=True,
 )
