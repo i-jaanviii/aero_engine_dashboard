@@ -15,18 +15,16 @@ import streamlit as st
 
 st.set_page_config(
     page_title="Aero Engine Predictive Maintenance",
-    page_icon="✈️",
+    page_icon=" ",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 NAVY = "#14213D"
-BLUE = "#2563EB"
-LIGHT_BLUE = "#60A5FA"
-GREEN = "#16A34A"
+BLUE = "#38BDF8"
+GREEN = "#22C55E"
 ORANGE = "#F59E0B"
-RED = "#DC2626"
-BG = "#F4F7FB"
+RED = "#F43F5E"
 
 MODEL_PATH = "rul_model.joblib"
 SENSOR_DATA_PATH = "dashboard_sensor_data.csv"
@@ -34,67 +32,88 @@ PREDICTIONS_PATH = "predictions.csv"
 
 
 # ============================================================
-# 2. CUSTOM CSS
+# 2. DARK NAVY THEME
 # ============================================================
 
 st.markdown(
     """
     <style>
     .stApp {
-        background-color: #F4F7FB;
+        background-color: #0B1728;
+        color: #EAF2FF;
+    }
+
+    [data-testid="stSidebar"] {
+        background-color: #07111F;
+    }
+
+    [data-testid="stHeader"] {
+        background-color: #0B1728;
     }
 
     .main-title {
         font-size: 34px;
         font-weight: 800;
-        color: #14213D;
-        margin-bottom: 0px;
+        color: #F1F5F9;
+        margin-bottom: 0;
     }
 
     .sub-title {
-        color: #64748B;
+        color: #93C5FD;
         font-size: 15px;
-        margin-top: 3px;
+        margin-top: 8px;
     }
 
     .section-title {
-        color: #14213D;
-        font-size: 21px;
+        color: #F1F5F9;
+        font-size: 23px;
         font-weight: 700;
-        margin-top: 15px;
+        margin-top: 20px;
     }
 
     div[data-testid="stMetric"] {
-        background-color: white;
-        border: 1px solid #E2E8F0;
-        padding: 16px;
+        background-color: #112238;
+        border: 1px solid #263B53;
+        padding: 18px;
         border-radius: 12px;
-        box-shadow: 0 2px 7px rgba(0,0,0,0.04);
+        box-shadow: none;
     }
 
     div[data-testid="stMetricLabel"] {
-        color: #64748B;
+        color: #93C5FD;
     }
 
     div[data-testid="stMetricValue"] {
-        color: #14213D;
+        color: #F1F5F9;
         font-weight: 700;
     }
 
     .status-card {
-        background: white;
+        background-color: #112238;
         padding: 18px;
         border-radius: 12px;
-        border: 1px solid #E2E8F0;
+        border: 1px solid #263B53;
         margin-bottom: 10px;
     }
 
     .footer {
         text-align: center;
-        color: #64748B;
+        color: #94A3B8;
         font-size: 12px;
         padding: 20px;
     }
+
+    div[data-baseweb="select"] > div {
+        background-color: #112238;
+        color: #F1F5F9;
+        border-color: #344B65;
+    }
+
+    div[data-testid="stAlert"] {
+        background-color: #112238;
+        color: #EAF2FF;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -106,12 +125,6 @@ st.markdown(
 # ============================================================
 
 def calculate_nasa_score(actual, predicted):
-    """
-    NASA asymmetric scoring function.
-
-    Negative error: prediction is lower than actual RUL.
-    Positive error: prediction is higher than actual RUL.
-    """
 
     actual = np.asarray(actual, dtype=float)
     predicted = np.asarray(predicted, dtype=float)
@@ -128,9 +141,6 @@ def calculate_nasa_score(actual, predicted):
 
 
 def normalize_column_names(data):
-    """
-    Standardizes common NASA C-MAPSS column naming formats.
-    """
 
     data = data.copy()
 
@@ -145,22 +155,23 @@ def normalize_column_names(data):
 
     data = data.rename(columns=aliases)
 
-    # Handle sensor columns such as sensor_02.
     rename = {}
 
     for col in data.columns:
+
         col_str = str(col).strip().lower()
 
         if col_str.startswith("sensor_"):
+
             suffix = col_str.replace("sensor_", "")
 
             try:
-                sensor_number = int(suffix)
-                rename[col] = f"sensor_{sensor_number}"
+                rename[col] = f"sensor_{int(suffix)}"
             except ValueError:
                 pass
 
         elif col_str.startswith("s") and col_str[1:].isdigit():
+
             rename[col] = f"sensor_{int(col_str[1:])}"
 
     data = data.rename(columns=rename)
@@ -169,66 +180,53 @@ def normalize_column_names(data):
 
 
 # ============================================================
-# 4. LOAD MODEL
+# 4. LOAD TRAINED MODEL
 # ============================================================
 
 @st.cache_resource
 def load_model():
+
     bundle = joblib.load(MODEL_PATH)
 
+    default_sensors = [
+        "sensor_2",
+        "sensor_3",
+        "sensor_4",
+        "sensor_6",
+        "sensor_7",
+        "sensor_8",
+        "sensor_9",
+        "sensor_11",
+        "sensor_12",
+        "sensor_13",
+        "sensor_14",
+        "sensor_15",
+        "sensor_17",
+        "sensor_20",
+        "sensor_21",
+    ]
+
     if isinstance(bundle, dict):
+
         model = bundle.get("model")
 
         if model is None:
             raise ValueError(
-                "The model bundle does not contain a 'model' key."
+                "Model bundle does not contain a 'model' key."
             )
 
         selected_sensors = bundle.get(
             "selected_sensors",
-            [
-                "sensor_2",
-                "sensor_3",
-                "sensor_4",
-                "sensor_6",
-                "sensor_7",
-                "sensor_8",
-                "sensor_9",
-                "sensor_11",
-                "sensor_12",
-                "sensor_13",
-                "sensor_14",
-                "sensor_15",
-                "sensor_17",
-                "sensor_20",
-                "sensor_21",
-            ],
+            default_sensors,
         )
 
         window_size = int(bundle.get("window_size", 30))
         rul_cap = float(bundle.get("rul_cap", 125))
 
     else:
+
         model = bundle
-
-        selected_sensors = [
-            "sensor_2",
-            "sensor_3",
-            "sensor_4",
-            "sensor_6",
-            "sensor_7",
-            "sensor_8",
-            "sensor_9",
-            "sensor_11",
-            "sensor_12",
-            "sensor_13",
-            "sensor_14",
-            "sensor_15",
-            "sensor_17",
-            "sensor_20",
-            "sensor_21",
-        ]
-
+        selected_sensors = default_sensors
         window_size = 30
         rul_cap = 125
 
@@ -241,16 +239,18 @@ def load_model():
 
 @st.cache_data
 def load_sensor_data():
+
     data = pd.read_csv(SENSOR_DATA_PATH)
+
     data = normalize_column_names(data)
 
-    required_columns = {"engine_id", "cycle"}
+    required = {"engine_id", "cycle"}
 
-    missing = required_columns.difference(data.columns)
+    missing = required.difference(data.columns)
 
     if missing:
         raise ValueError(
-            f"Missing required columns in sensor data: {sorted(missing)}"
+            f"Missing columns in sensor data: {sorted(missing)}"
         )
 
     data["engine_id"] = pd.to_numeric(
@@ -261,7 +261,9 @@ def load_sensor_data():
         data["cycle"], errors="coerce"
     )
 
-    data = data.dropna(subset=["engine_id", "cycle"])
+    data = data.dropna(
+        subset=["engine_id", "cycle"]
+    )
 
     data["engine_id"] = data["engine_id"].astype(int)
     data["cycle"] = data["cycle"].astype(int)
@@ -274,7 +276,7 @@ def load_sensor_data():
 
 
 # ============================================================
-# 6. LOAD COLAB EVALUATION RESULTS
+# 6. LOAD MODEL EVALUATION RESULTS
 # ============================================================
 
 @st.cache_data
@@ -295,20 +297,14 @@ def load_evaluation_results():
             f"Missing columns in predictions.csv: {sorted(missing)}"
         )
 
-    results["engine_id"] = pd.to_numeric(
-        results["engine_id"], errors="coerce"
-    )
+    for col in required:
 
-    results["predicted_RUL"] = pd.to_numeric(
-        results["predicted_RUL"], errors="coerce"
-    )
-
-    results["actual_RUL"] = pd.to_numeric(
-        results["actual_RUL"], errors="coerce"
-    )
+        results[col] = pd.to_numeric(
+            results[col], errors="coerce"
+        )
 
     results = results.dropna(
-        subset=["engine_id", "predicted_RUL", "actual_RUL"]
+        subset=list(required)
     )
 
     results = results.sort_values(
@@ -317,7 +313,7 @@ def load_evaluation_results():
 
     if len(results) != 100:
         raise ValueError(
-            f"Expected 100 test engine predictions, found {len(results)}."
+            f"Expected 100 engine predictions, found {len(results)}."
         )
 
     if results["engine_id"].nunique() != 100:
@@ -326,17 +322,24 @@ def load_evaluation_results():
         )
 
     actual = results["actual_RUL"].to_numpy(dtype=float)
+
     predicted = results["predicted_RUL"].to_numpy(dtype=float)
 
-    rmse = float(np.sqrt(np.mean((predicted - actual) ** 2)))
-    mae = float(np.mean(np.abs(predicted - actual)))
+    rmse = float(
+        np.sqrt(np.mean((predicted - actual) ** 2))
+    )
+
+    mae = float(
+        np.mean(np.abs(predicted - actual))
+    )
+
     score = calculate_nasa_score(actual, predicted)
 
     return rmse, mae, score
 
 
 # ============================================================
-# 7. PREDICT RUL FOR SELECTED ENGINE
+# 7. PREDICT RUL
 # ============================================================
 
 def predict_engine_rul(
@@ -351,13 +354,15 @@ def predict_engine_rul(
     engine_data = engine_data.sort_values("cycle").copy()
 
     if selected_cycle is not None:
+
         engine_data = engine_data[
             engine_data["cycle"] <= selected_cycle
         ]
 
     if len(engine_data) < window_size:
+
         raise ValueError(
-            f"At least {window_size} cycles are required for prediction."
+            f"At least {window_size} cycles are required."
         )
 
     missing_sensors = [
@@ -366,8 +371,9 @@ def predict_engine_rul(
     ]
 
     if missing_sensors:
+
         raise ValueError(
-            f"Missing model input sensors: {missing_sensors}"
+            f"Missing sensor columns: {missing_sensors}"
         )
 
     latest_window = engine_data.tail(window_size)
@@ -377,23 +383,23 @@ def predict_engine_rul(
     ].apply(pd.to_numeric, errors="coerce")
 
     if sensor_values.isna().any().any():
+
         raise ValueError(
             "Sensor data contains missing or non-numeric values."
         )
 
-    # 30 cycles x 15 sensors = 450 features.
     features = sensor_values.to_numpy().reshape(1, -1)
 
-    # The saved pipeline already includes StandardScaler.
+    # Scaling is already included in the trained pipeline.
     prediction = model.predict(features)[0]
 
-    prediction = float(np.clip(prediction, 0, rul_cap))
-
-    return prediction
+    return float(
+        np.clip(prediction, 0, rul_cap)
+    )
 
 
 # ============================================================
-# 8. HISTORICAL DEGRADATION PREDICTIONS
+# 8. HISTORICAL RUL PREDICTIONS
 # ============================================================
 
 def generate_degradation_history(
@@ -408,7 +414,10 @@ def generate_degradation_history(
 
     history = []
 
-    for end_index in range(window_size, len(engine_data) + 1):
+    for end_index in range(
+        window_size,
+        len(engine_data) + 1
+    ):
 
         window = engine_data.iloc[
             end_index - window_size:end_index
@@ -423,9 +432,7 @@ def generate_degradation_history(
 
         features = sensor_values.to_numpy().reshape(1, -1)
 
-        prediction = float(
-            model.predict(features)[0]
-        )
+        prediction = model.predict(features)[0]
 
         prediction = float(
             np.clip(prediction, 0, rul_cap)
@@ -440,7 +447,7 @@ def generate_degradation_history(
 
 
 # ============================================================
-# 9. HEALTH STATUS
+# 9. ENGINE HEALTH STATUS
 # ============================================================
 
 def get_health_status(rul):
@@ -456,18 +463,21 @@ def get_health_status(rul):
 
 
 # ============================================================
-# 10. MAIN DASHBOARD
+# 10. DASHBOARD HEADER
 # ============================================================
 
 st.markdown(
-    '<div class="main-title">✈️ Aero Engine Predictive Maintenance</div>',
+    '<div class="main-title">Aero Engine Predictive Maintenance</div>',
     unsafe_allow_html=True,
 )
 
 st.markdown(
-    '<div class="sub-title">'
-    'SIH26054 | AI-Enabled Predictive Maintenance for Aero Engines'
-    '</div>',
+    """
+    <div class="sub-title">
+    NASA C-MAPSS FD001 | Engine condition monitoring |
+    Remaining useful life prediction
+    </div>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -484,19 +494,23 @@ st.info(
 # ============================================================
 
 try:
+
     model, selected_sensors, window_size, rul_cap = load_model()
+
     sensor_data = load_sensor_data()
 
 except Exception as error:
+
     st.error(f"Unable to load project files: {error}")
+
     st.stop()
 
 
 # ============================================================
-# 12. SIDEBAR - ENGINE SELECTION
+# 12. SIDEBAR CONTROLS
 # ============================================================
 
-st.sidebar.title("Dashboard Controls")
+st.sidebar.title("Monitoring controls")
 
 st.sidebar.markdown("---")
 
@@ -505,13 +519,15 @@ engine_ids = sorted(
 )
 
 if not engine_ids:
-    st.error("No engine data found in dashboard_sensor_data.csv.")
+
+    st.error("No engine data found.")
+
     st.stop()
 
 selected_engine = st.sidebar.selectbox(
-    "Select Engine",
+    "Select engine",
     engine_ids,
-    index=0,
+    format_func=lambda x: f"Engine {x}",
 )
 
 engine_data = sensor_data[
@@ -519,17 +535,24 @@ engine_data = sensor_data[
 ].sort_values("cycle").copy()
 
 if len(engine_data) < window_size:
+
     st.error(
         f"Engine {selected_engine} has fewer than "
-        f"{window_size} cycles. Prediction is not possible."
+        f"{window_size} cycles."
     )
+
     st.stop()
 
-minimum_cycle = int(engine_data["cycle"].iloc[window_size - 1])
-maximum_cycle = int(engine_data["cycle"].max())
+minimum_cycle = int(
+    engine_data["cycle"].iloc[window_size - 1]
+)
+
+maximum_cycle = int(
+    engine_data["cycle"].max()
+)
 
 selected_cycle = st.sidebar.slider(
-    "Operating Cycle",
+    "Current operating cycle",
     min_value=minimum_cycle,
     max_value=maximum_cycle,
     value=maximum_cycle,
@@ -538,23 +561,21 @@ selected_cycle = st.sidebar.slider(
 
 st.sidebar.markdown("---")
 
-st.sidebar.caption(
-    f"Selected Engine: {selected_engine}"
-)
+st.sidebar.caption("Dataset: NASA C-MAPSS FD001")
+
+st.sidebar.caption("Model: Linear Regression")
 
 st.sidebar.caption(
-    f"Available Cycles: {len(engine_data)}"
+    f"Input: {window_size} cycles × {len(selected_sensors)} sensors"
 )
 
-st.sidebar.caption(
-    f"Model Window: {window_size} cycles"
-)
 
 # ============================================================
 # 13. LIVE RUL PREDICTION
 # ============================================================
 
 try:
+
     predicted_rul = predict_engine_rul(
         engine_data=engine_data,
         model=model,
@@ -565,65 +586,68 @@ try:
     )
 
 except Exception as error:
+
     st.error(f"RUL prediction failed: {error}")
+
     st.stop()
 
 
-health_status, status_color = get_health_status(predicted_rul)
+health_status, status_color = get_health_status(
+    predicted_rul
+)
 
 
 # ============================================================
-# 14. TOP METRIC CARDS
+# 14. ENGINE OVERVIEW
 # ============================================================
 
 st.markdown(
-    '<div class="section-title">Engine Overview</div>',
+    '<div class="section-title">Engine overview</div>',
     unsafe_allow_html=True,
 )
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
+
     st.metric(
-        "Engine ID",
-        f"Engine {selected_engine}",
+        "Selected engine",
+        f"ENG-{selected_engine:03d}",
     )
 
 with col2:
+
     st.metric(
-        "Operating Cycle",
+        "Current operating cycle",
         selected_cycle,
     )
 
 with col3:
+
     st.metric(
-        "Predicted Remaining Useful Life",
+        "Predicted remaining useful life",
         f"{predicted_rul:.2f} cycles",
     )
 
 with col4:
+
     st.metric(
-        "Health Status",
+        "Health status (RUL threshold rule)",
         health_status,
     )
 
 
 # ============================================================
-# 15. ENGINE HEALTH INDICATOR
+# 15. HEALTH STATUS INDICATOR
 # ============================================================
-
-st.markdown(
-    '<div class="section-title">Engine Health Status</div>',
-    unsafe_allow_html=True,
-)
 
 st.markdown(
     f"""
     <div class="status-card">
         <h3 style="color:{status_color}; margin:0;">
-            ● {health_status}
+            {health_status}
         </h3>
-        <p style="color:#64748B; margin-top:8px;">
+        <p style="color:#94A3B8; margin-top:8px;">
             Estimated remaining useful life:
             <b>{predicted_rul:.2f} cycles</b>
         </p>
@@ -639,11 +663,11 @@ st.progress(
 
 
 # ============================================================
-# 16. SENSOR MONITORING GRAPHS
+# 16. SENSOR MONITORING
 # ============================================================
 
 st.markdown(
-    '<div class="section-title">Sensor Monitoring</div>',
+    '<div class="section-title">Sensor monitoring</div>',
     unsafe_allow_html=True,
 )
 
@@ -656,7 +680,6 @@ available_sensors = [
     if sensor in sensor_window.columns
 ]
 
-# Display the first six selected model sensors.
 display_sensors = available_sensors[:6]
 
 if display_sensors:
@@ -680,7 +703,7 @@ if display_sensors:
                 y=sensor_window[sensor],
                 mode="lines+markers",
                 name=sensor,
-                line=dict(width=2, color=BLUE),
+                line=dict(width=2, color="#38BDF8"),
                 marker=dict(size=4),
                 showlegend=False,
             ),
@@ -689,20 +712,23 @@ if display_sensors:
         )
 
         fig_sensors.update_xaxes(
-            title_text="Operating Cycle",
+            title_text="Operating cycle",
             row=row,
             col=col,
         )
 
         fig_sensors.update_yaxes(
-            title_text="Sensor Reading",
+            title_text="Sensor value",
             row=row,
             col=col,
         )
 
     fig_sensors.update_layout(
         height=650,
-        template="plotly_white",
+        template="plotly_dark",
+        paper_bgcolor="#112238",
+        plot_bgcolor="#112238",
+        font=dict(color="#EAF2FF"),
         margin=dict(l=20, r=20, t=50, b=20),
     )
 
@@ -712,19 +738,21 @@ if display_sensors:
     )
 
 else:
-    st.warning("No selected sensor columns are available to plot.")
+
+    st.warning("No selected sensor columns are available.")
 
 
 # ============================================================
-# 17. HISTORICAL DEGRADATION CURVE
+# 17. HISTORICAL RUL PREDICTION CURVE
 # ============================================================
 
 st.markdown(
-    '<div class="section-title">Historical RUL Degradation Curve</div>',
+    '<div class="section-title">Historical RUL prediction curve</div>',
     unsafe_allow_html=True,
 )
 
 try:
+
     degradation_history = generate_degradation_history(
         engine_data=engine_data[
             engine_data["cycle"] <= selected_cycle
@@ -746,12 +774,12 @@ try:
                 mode="lines+markers",
                 name="Predicted RUL",
                 line=dict(
-                    color=BLUE,
+                    color="#A78BFA",
                     width=3,
                 ),
                 marker=dict(size=5),
                 fill="tozeroy",
-                fillcolor="rgba(37, 99, 235, 0.08)",
+                fillcolor="rgba(167,139,250,0.08)",
             )
         )
 
@@ -760,9 +788,9 @@ try:
                 x=[selected_cycle],
                 y=[predicted_rul],
                 mode="markers",
-                name="Current Prediction",
+                name="Current prediction",
                 marker=dict(
-                    color=RED,
+                    color="#F43F5E",
                     size=12,
                     symbol="diamond",
                 ),
@@ -770,10 +798,13 @@ try:
         )
 
         fig_degradation.update_layout(
-            title=f"Engine {selected_engine} - RUL over Operating Cycles",
-            xaxis_title="Operating Cycle",
-            yaxis_title="Predicted Remaining Useful Life",
-            template="plotly_white",
+            title="Predicted RUL over historical windows",
+            xaxis_title="Operating cycle",
+            yaxis_title="Predicted remaining life (cycles)",
+            template="plotly_dark",
+            paper_bgcolor="#112238",
+            plot_bgcolor="#112238",
+            font=dict(color="#EAF2FF"),
             height=420,
             hovermode="x unified",
             margin=dict(l=20, r=20, t=60, b=20),
@@ -785,11 +816,13 @@ try:
         )
 
     else:
+
         st.warning(
-            "Not enough valid sensor readings to generate the degradation curve."
+            "Not enough valid sensor readings for the degradation curve."
         )
 
 except Exception as error:
+
     st.warning(
         f"Unable to generate degradation curve: {error}"
     )
@@ -800,51 +833,56 @@ except Exception as error:
 # ============================================================
 
 st.markdown(
-    '<div class="section-title">Model Performance Evaluation</div>',
+    '<div class="section-title">Model performance evaluation</div>',
     unsafe_allow_html=True,
 )
 
 try:
+
     rmse, mae, asymmetric_score = load_evaluation_results()
 
     metric1, metric2, metric3 = st.columns(3)
 
     with metric1:
+
         st.metric(
             "RMSE",
             f"{rmse:.3f}",
         )
 
     with metric2:
+
         st.metric(
             "MAE",
             f"{mae:.3f}",
         )
 
     with metric3:
+
         st.metric(
-            "NASA Asymmetric Score",
+            "NASA asymmetric score",
             f"{asymmetric_score:.3f}",
         )
 
     st.caption(
-        "Metrics are calculated from the saved predictions.csv "
-        "file containing predictions and ground-truth RUL labels "
-        "for the 100 FD001 test engines. These are evaluation "
-        "results, not live metrics for the selected engine."
+        "Metrics are calculated from predictions.csv, containing "
+        "predictions and ground-truth RUL labels for 100 FD001 test "
+        "engines. These are evaluation results, not live metrics "
+        "for the selected engine."
     )
 
 except Exception as error:
+
     st.error(
         f"Unable to load evaluation metrics: {error}"
     )
 
 
 # ============================================================
-# 19. SELECTED ENGINE DATA TABLE
+# 19. SENSOR DATA TABLE
 # ============================================================
 
-with st.expander("View Selected Engine Sensor Data"):
+with st.expander("View selected engine sensor data"):
 
     st.dataframe(
         sensor_window[
